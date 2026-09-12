@@ -1,1 +1,171 @@
+GradeFlow AI
+Product Requirements Document + Complete Workflow
+Hackathon Demo & MVP
 
+1. Complete System Workflow
+Question Paper PDF + Answer Key PDF
+↓
+100+ separate Student Answer-Sheet PDFs
+↓
+1 PDF = 1 Student
+↓
+Read each PDF page
+↓
+Digital/selectable-text page → local text extraction
+Scanned/handwritten page → Groq Vision OCR
+↓
+Combine all pages for the student
+↓
+Extract student name + roll number + answers
+↓
+Groq AI grading against question paper + answer key
+↓
+Score + percentage + grade + confidence + feedback
+↓
+Review flag for low-confidence/failed submissions
+↓
+Live consolidated result sheet
+↓
+Excel / JSON export
+
+Workflow Explanation
+1.	Upload inputs: The teacher uploads one question paper PDF, one answer-key PDF, and multiple separate student answer-sheet PDFs.
+2.	Treat each PDF independently: Each student PDF is treated as one student submission. A student PDF may contain multiple pages.
+3.	Read every page: Selectable digital text is extracted locally. Scanned or handwritten pages are sent to Vision OCR.
+4.	Combine the student submission: All page transcriptions belonging to the same student are combined before grading.
+5.	Identify the student: The system extracts the student name and roll number when available.
+6.	Grade the submission: The grading model compares the student's answers with the question paper and answer key.
+7.	Calculate results: The system produces score, percentage, grade, confidence, feedback, and review status.
+8.	Continue the batch: An individual paper failure is captured as an error/review item instead of stopping the complete batch.
+9.	Show consolidated results: Processed students appear in a live result table and can be exported.
+ 
+2. Product Requirements Document (PRD)
+Document version: Version 4.0 | Hackathon Demo & MVP
+3. Product Overview
+GradeFlow AI is a generative-AI powered test and paper checking application for teachers. It is designed to process 100+ separate student answer-sheet PDFs in one batch, including scanned or handwritten papers, and produce a consolidated result sheet.
+4. Problem Statement
+Manual checking of large batches of student papers is repetitive, time-consuming, and difficult to standardize. Scanned answer sheets also make conventional PDF text extraction unreliable.
+5. Product Goal
+Allow a teacher to upload one question paper PDF and one answer-key PDF.
+Allow 100+ separate student answer-sheet PDFs to be uploaded together.
+Treat each student PDF as one independent submission.
+Use AI vision OCR when papers are scanned or handwritten.
+Extract student name and roll number from the paper.
+Evaluate answers against the answer key and calculate marks, percentage, grade, and confidence.
+Continue processing the batch when an individual paper fails.
+Provide a consolidated downloadable Excel result sheet.
+Provide teacher review information for low-confidence or failed submissions.
+6. Target Users
+• School and college teachers
+• Exam coordinators
+• Tutors and coaching centers
+• Hackathon judges evaluating AI education automation
+7. User Inputs
+• Question Paper: PDF
+• Answer Key: PDF
+• Student Answer Sheets: multiple separate PDF files, with 100+ supported as a target batch size
+8. Core User Workflow
+1. Teacher opens the deployed Streamlit application.
+2. Teacher uploads the question paper PDF.
+3. Teacher uploads the answer key PDF.
+4. Teacher selects multiple student answer-sheet PDFs.
+5. GradeFlow AI validates the batch and begins processing.
+6. Each PDF is processed independently.
+7. Text is extracted directly when possible; scanned/handwritten pages use Vision OCR.
+8. Student name and roll number are identified.
+9. The grading model compares the submission with the question paper and answer key.
+10. The application calculates score, percentage, grade, confidence, and review status.
+11. Results are combined into a consolidated dashboard and Excel file.
+9. Functional Requirements
+• Multi-file student upload.
+• Per-student processing isolation.
+• Page-by-page Vision OCR for scanned/handwritten papers.
+• Conservative Vision request sizing to reduce provider rate-limit failures.
+• Automatic retry/backoff for transient Groq rate-limit responses.
+• Structured AI grading output.
+• Name and roll-number extraction.
+• Score and percentage calculation.
+• Letter grade calculation.
+• Confidence score and teacher review flag.
+• Batch progress indicator.
+• Error capture without stopping the complete batch.
+• Excel export and JSON export.
+• Teacher review queue and individual student reports.
+10. AI / Technical Architecture
+Frontend: Streamlit
+Programming language: Python
+LLM API: Groq
+Vision OCR model: configurable Groq vision model
+Grading model: configurable Groq text model
+PDF text extraction: pypdf
+PDF page rendering: PyMuPDF
+Data processing: pandas
+Excel generation: openpyxl
+Deployment: Streamlit Community Cloud
+Source control: GitHub
+11. Reliability Design
+Vision OCR defaults to one page per request to reduce image/input-token pressure.
+OCR output is capped to remain below the account's observed output-token limit.
+Vision requests are serialized rather than launching many simultaneous vision calls.
+Rate-limit errors are retried using a delay derived from the provider response when available.
+A single student's failure is recorded as an error/review item rather than terminating the batch.
+The application exposes status information so the teacher can identify papers needing review.
+12. Result Sheet
+The consolidated result sheet is designed to contain:
+Roll No	Student Name	Score	Max Marks	Percentage	Grade	Confidence	Review	Status
+104	Student A	85	100	85%	A	92%	No	OK
+105	Student B	72	100	72%	B	81%	No	OK
+106	Student C	54	100	54%	C	63%	Yes	Review
+13. Dashboard Requirements
+•	Number of papers processed
+•	Average score
+•	Highest score
+•	Number requiring review
+•	Number of processing errors
+•	Consolidated results table
+•	Question-level analytics
+•	Teacher review queue
+•	Individual student report
+14. Non-Functional Requirements
+•	Browser-based workflow; no local Python execution required for the deployed demo.
+•	Readable and simple teacher-facing UI.
+•	Graceful handling of scanned PDFs.
+•	Batch processing must be fault tolerant.
+•	Secrets such as the Groq API key must be stored through Streamlit secrets rather than committed to GitHub.
+•	The system should clearly communicate that AI-generated grades may require teacher verification.
+15. Hackathon Demo Success Criteria
+•	Successfully upload question paper and answer key.
+•	Successfully upload multiple separate student PDFs.
+•	Demonstrate OCR on a scanned/handwritten student paper.
+•	Show extracted student name and roll number.
+•	Show an automatically generated grade.
+•	Show multiple students in one consolidated result table.
+•	Download the Excel result sheet.
+•	Demonstrate that an error on one paper does not stop the remaining batch.
+16. Known Constraints
+•	Groq model rate limits can affect throughput for large batches of image-heavy papers.
+•	Handwriting quality, scan quality, page orientation, and image resolution affect OCR accuracy.
+•	AI grading should be treated as decision support and reviewed where confidence is low.
+•	Very large batches may take time because reliability settings intentionally favor conservative Vision requests.
+17. Future Enhancements
+•	Question-type aware grading for MCQ, short-answer, and long-answer questions.
+•	Rubric-based marking.
+•	Teacher correction and re-grade workflow.
+•	Duplicate/blank paper detection.
+•	Class-level performance trends.
+•	More export formats.
+•	Queue-based background processing for very large batches.
+•	Institution-level authentication and role management.
+18. MVP Definition
+The MVP is complete when a teacher can upload the required PDFs in a browser, process multiple student submissions, obtain student identity and grading results, review exceptions, and download a consolidated result sheet without running the application locally.
+19. Implementation Map
+•	Frontend: Streamlit
+•	Source control: GitHub
+•	Deployment: Streamlit Community Cloud
+•	AI provider: Groq
+•	PDF text extraction: pypdf
+•	PDF rendering for OCR: PyMuPDF
+•	Data processing: pandas
+•	Excel export: openpyxl
+
+GradeFlow AI — PRD + Workflow

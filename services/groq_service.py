@@ -42,6 +42,7 @@ def _sleep_for_rate_limit(exc: Exception, default_seconds: float = 8.0):
 
 
 def _call_with_retries(fn, attempts: int = 4):
+    """Retry short-lived rate limits, but NEVER hammer a daily-token limit."""
     last = None
     for attempt in range(attempts):
         try:
@@ -49,7 +50,22 @@ def _call_with_retries(fn, attempts: int = 4):
         except Exception as exc:
             last = exc
             message = str(exc).lower()
-            is_rate = "429" in message or "rate limit" in message or "rate_limit" in message
+
+            # TPD is a daily model-token ceiling. Retrying the same request
+            # cannot make it succeed and only wastes time / creates duplicate errors.
+            if "tokens per day" in message or "tpd" in message:
+                raise RuntimeError(
+                    "Groq daily token limit reached for this model. "
+                    "Do not retry this request. Switch the Vision/OCR model "
+                    "or wait until Groq resets the limit. Original error: "
+                    + str(exc)
+                ) from exc
+
+            is_rate = (
+                "429" in message
+                or "rate limit" in message
+                or "rate_limit" in message
+            )
             if not is_rate or attempt == attempts - 1:
                 raise
             _sleep_for_rate_limit(exc)
@@ -80,7 +96,8 @@ def _vision_ocr_page(client: Groq, model: str, image_bytes: bytes, page_number: 
             model=model,
             messages=[{"role": "user", "content": content}],
             temperature=0,
-            max_completion_tokens=500,
+            max_completion_tokens=350,
+            service_tier="auto",
         )
         _mark_call("vision")
         return response
@@ -91,7 +108,7 @@ def _vision_ocr_page(client: Groq, model: str, image_bytes: bytes, page_number: 
     return f"\n--- PAGE {page_number} ---\n{response.choices[0].message.content or ''}"
 
 
-def vision_ocr_pdf(api_key: str, pdf_bytes: bytes, model: str, max_pages: int = 30) -> str:
+def vision_ocr_pdf(api_key: str, pdf_bytes: bytes, model: str, max_pages: int = 30, fallback_model: str = "qwen/qwen3.8-27b") -> str:
     """Use local text extraction for digital pages and Vision only for scanned pages."""
     page_info = extract_pages_with_text(pdf_bytes, min_chars=25)
     if not page_info:
@@ -110,10 +127,23 @@ def vision_ocr_pdf(api_key: str, pdf_bytes: bytes, model: str, max_pages: int = 
             page_numbers=ocr_pages,
         )
         client = Groq(api_key=api_key)
+        active_model = model
         for item in images:
-            ocr_map[item["page"]] = _vision_ocr_page(
-                client, model, item["bytes"], item["page"]
-            )
+            try:
+                ocr_map[item["page"]] = _vision_ocr_page(
+                    client, active_model, item["bytes"], item["page"]
+                )
+            except RuntimeError as exc:
+                # If the primary Vision model has exhausted its daily token quota,
+                # try the alternate Vision model once. This is a model-level fallback,
+                # not a retry against the exhausted quota.
+                if "daily token limit reached" in str(exc).lower() and fallback_model and active_model != fallback_model:
+                    active_model = fallback_model
+                    ocr_map[item["page"]] = _vision_ocr_page(
+                        client, active_model, item["bytes"], item["page"]
+                    )
+                else:
+                    raise
 
     combined = []
     for page in range(1, max((p["page"] for p in selected), default=0) + 1):

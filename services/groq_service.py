@@ -3,54 +3,16 @@ import json
 import re
 import threading
 import time
-from typing import Dict, Any, List
+from typing import Any, Dict
 
 from groq import Groq
+
 from services.pdf_service import extract_pages_with_text, render_pdf_pages
 
-GRADING_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "student_name": {"type": "string"},
-        "roll_no": {"type": "string"},
-        "score": {"type": "number"},
-        "percentage": {"type": "number"},
-        "grade": {"type": "string"},
-        "confidence": {"type": "number"},
-        "feedback": {"type": "string"},
-        "question_results": {"type": "array", "items": {
-            "type": "object",
-            "properties": {
-                "question": {"type": "string"},
-                "marks_awarded": {"type": "number"},
-                "max_marks": {"type": "number"},
-                "status": {"type": "string"},
-                "reason": {"type": "string"},
-            },
-            "required": ["question", "marks_awarded", "max_marks", "status", "reason"],
-            "additionalProperties": False,
-        }},
-    },
-    "required": ["student_name", "roll_no", "score", "percentage", "grade", "confidence", "feedback", "question_results"],
-    "additionalProperties": False,
-}
-
-GRADING_SYSTEM = """You are GradeFlow AI, an AI-assisted examination marking engine.
-You receive an official question paper, official answer key, and ONE student's complete answer sheet.
-All pages supplied for the student belong to the same student.
-Identify name and roll number only from the student submission. Grade only against the supplied references.
-Award justified partial credit. Never exceed maximum marks. Be conservative with unclear handwriting.
-confidence must be between 0 and 1. Return only valid JSON matching the schema."""
-
-# Separate locks keep OCR conservative while allowing grading to use a small amount
-# of concurrency. The app defaults to 2 grading workers, but OCR remains serialized.
 _VISION_LOCK = threading.Lock()
 _GRADE_LOCK = threading.Lock()
-
-# A tiny spacing delay prevents bursts after a successful call. This is not a
-# replacement for provider limits; 429 responses still use the server retry delay.
 VISION_GAP_SECONDS = 1.0
-GRADE_GAP_SECONDS = 0.25
+GRADE_GAP_SECONDS = 0.35
 _last_vision_call = 0.0
 _last_grade_call = 0.0
 
@@ -66,44 +28,50 @@ def _wait_for_gap(kind: str):
 
 def _mark_call(kind: str):
     global _last_vision_call, _last_grade_call
-    now = time.monotonic()
     if kind == "vision":
-        _last_vision_call = now
+        _last_vision_call = time.monotonic()
     else:
-        _last_grade_call = now
+        _last_grade_call = time.monotonic()
 
 
-def _sleep_for_rate_limit(exc: Exception, default_seconds: float = 8.0) -> None:
+def _sleep_for_rate_limit(exc: Exception, default_seconds: float = 8.0):
     message = str(exc)
-    match = re.search(r"try again in ([0-9.]+)s", message, flags=re.IGNORECASE)
+    match = re.search(r"try again in ([0-9.]+)s", message, flags=re.I)
     seconds = float(match.group(1)) if match else default_seconds
     time.sleep(min(max(seconds + 1.0, 2.0), 90.0))
 
 
 def _call_with_retries(fn, attempts: int = 4):
-    last_error = None
+    last = None
     for attempt in range(attempts):
         try:
             return fn()
         except Exception as exc:
-            last_error = exc
+            last = exc
             message = str(exc).lower()
-            if "429" not in message and "rate_limit" not in message and "rate limit" not in message:
+            is_rate = "429" in message or "rate limit" in message or "rate_limit" in message
+            if not is_rate or attempt == attempts - 1:
                 raise
-            if attempt < attempts - 1:
-                _sleep_for_rate_limit(exc)
-    raise last_error
+            _sleep_for_rate_limit(exc)
+    raise last
 
 
 def _vision_ocr_page(client: Groq, model: str, image_bytes: bytes, page_number: int) -> str:
     encoded = base64.b64encode(image_bytes).decode("utf-8")
     content = [
-        {"type": "text", "text": (
-            "Transcribe this exam answer-sheet page. Keep student name, roll number, "
-            "question numbers, options, equations and written answers. Do not grade. "
-            "Use [unclear] only when necessary. Plain text only."
-        )},
-        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}},
+        {
+            "type": "text",
+            "text": (
+                "Transcribe this exam answer-sheet page exactly enough for grading. "
+                "Keep student name, roll number, question numbers, options, equations, "
+                "calculations and written answers. Do not grade. Do not summarize. "
+                "Use [unclear] only when necessary. Plain text only."
+            ),
+        },
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{encoded}"},
+        },
     ]
 
     def request():
@@ -118,53 +86,65 @@ def _vision_ocr_page(client: Groq, model: str, image_bytes: bytes, page_number: 
         return response
 
     with _VISION_LOCK:
-        response = _call_with_retries(request, attempts=4)
+        response = _call_with_retries(request)
 
     return f"\n--- PAGE {page_number} ---\n{response.choices[0].message.content or ''}"
 
 
 def vision_ocr_pdf(api_key: str, pdf_bytes: bytes, model: str, max_pages: int = 30) -> str:
-    """OCR only pages that have little/no selectable text; preserve all page order."""
+    """Use local text extraction for digital pages and Vision only for scanned pages."""
     page_info = extract_pages_with_text(pdf_bytes, min_chars=25)
-    if page_info:
-        ocr_pages = [p["page"] for p in page_info if p["needs_ocr"] and p["page"] <= max_pages]
-        local_parts = [f"\n--- PAGE {p['page']} ---\n{p['text']}" for p in page_info if p["page"] <= max_pages and not p["needs_ocr"]]
-    else:
-        ocr_pages = list(range(1, max_pages + 1))
-        local_parts = []
+    if not page_info:
+        return ""
 
-    if not ocr_pages:
-        return "\n".join(local_parts).strip()
+    selected = [p for p in page_info if p["page"] <= max_pages]
+    ocr_pages = [p["page"] for p in selected if p["needs_ocr"]]
+    local_pages = {p["page"]: p["text"] for p in selected if not p["needs_ocr"]}
 
-    images = render_pdf_pages(pdf_bytes, max_pages=max_pages, scale=0.60, page_numbers=ocr_pages)
-    client = Groq(api_key=api_key)
     ocr_map = {}
-    for item in images:
-        ocr_map[item["page"]] = _vision_ocr_page(client, model, item["bytes"], item["page"])
+    if ocr_pages:
+        images = render_pdf_pages(
+            pdf_bytes,
+            max_pages=max_pages,
+            scale=0.60,
+            page_numbers=ocr_pages,
+        )
+        client = Groq(api_key=api_key)
+        for item in images:
+            ocr_map[item["page"]] = _vision_ocr_page(
+                client, model, item["bytes"], item["page"]
+            )
 
     combined = []
-    max_seen = max([p["page"] for p in page_info if p["page"] <= max_pages] + ocr_pages, default=0)
-    for page_number in range(1, max_seen + 1):
-        match = next((p for p in page_info if p["page"] == page_number), None)
-        if match and not match["needs_ocr"]:
-            combined.append(f"\n--- PAGE {page_number} ---\n{match['text']}")
-        elif page_number in ocr_map:
-            combined.append(ocr_map[page_number])
+    for page in range(1, max((p["page"] for p in selected), default=0) + 1):
+        if page in local_pages:
+            combined.append(f"\n--- PAGE {page} ---\n{local_pages[page]}")
+        elif page in ocr_map:
+            combined.append(ocr_map[page])
+
     return "\n".join(combined).strip()
 
 
-def _grade_request(client, model, question_paper, answer_key, student_text, max_marks):
-    """Grade one complete student submission using Groq JSON Object Mode.
+def _extract_json(text: str) -> Dict[str, Any]:
+    """Parse JSON even if a model accidentally wraps it in Markdown."""
+    cleaned = (text or "").strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(cleaned[start:end + 1])
+        raise
 
-    JSON Object Mode is intentionally used instead of strict json_schema mode
-    because it is more compatible across Groq models and avoids schema-validation
-    failures such as json_validate_failed.
-    """
-    prompt = f"""
-Grade ONE student's complete exam submission.
 
-All pages in the STUDENT ANSWERS belong to the same student.
-Do not treat pages as separate students.
+def _grading_prompt(question_paper: str, answer_key: str, student_text: str, max_marks: int) -> str:
+    return f"""
+You are GradeFlow AI, an examination marking engine.
+
+Grade ONE student's complete answer submission. Every page in STUDENT ANSWERS belongs to the same student.
 
 QUESTION PAPER:
 {question_paper[:60000]}
@@ -175,65 +155,79 @@ OFFICIAL ANSWER KEY:
 STUDENT ANSWERS:
 {student_text[:90000]}
 
-MAXIMUM EXAM MARKS:
-{max_marks}
+TOTAL MAXIMUM MARKS: {max_marks}
 
-Return ONLY a valid JSON object. Do not use Markdown. Do not add any text before or after the JSON.
-
-Use exactly these top-level keys:
+Return ONLY one valid JSON object with these top-level keys:
 student_name, roll_no, score, percentage, grade, confidence, feedback, question_results
 
-question_results must be a JSON array. Each item must contain:
+question_results is an array. Each item has:
 question, marks_awarded, max_marks, status, reason
 
 Rules:
-- Identify student_name and roll_no only from the student's submission.
-- If either is unavailable, use "Unknown".
-- Grade the complete submission across all pages.
-- Do not double-count an answer.
+- Identify student_name and roll_no only from the student submission. Use "Unknown" if unavailable.
+- Treat all pages as one student and do not double-count answers.
+- Grade only against the supplied question paper and answer key.
 - Award justified partial credit.
-- Never award more than the maximum marks.
-- score must be between 0 and {max_marks}.
-- percentage must be between 0 and 100.
-- confidence must be between 0 and 1.
-- If handwriting or OCR is unclear, lower confidence and explain it in feedback.
-- status should normally be one of: correct, partial, incorrect, unanswered, unclear.
-- Keep feedback concise.
+- Never exceed maximum marks.
+- score must be 0 to {max_marks}.
+- percentage must be 0 to 100.
+- confidence must be 0 to 1.
+- status should be correct, partial, incorrect, unanswered, or unclear.
+- If OCR/handwriting is unclear, reduce confidence and mention it briefly in feedback.
+- No Markdown and no text outside JSON.
 """
 
-    response = client.chat.completions.create(
+
+def _grade_request(client: Groq, model: str, prompt: str, max_marks: int, strict_json: bool):
+    kwargs = dict(
         model=model,
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are GradeFlow AI. Return only a valid JSON object. "
-                    "Never return Markdown or explanatory text outside JSON."
-                ),
-            },
+            {"role": "system", "content": "Return only valid JSON. You are an accurate exam grader."},
             {"role": "user", "content": prompt},
         ],
-        response_format={"type": "json_object"},
         temperature=0,
         max_completion_tokens=2600,
     )
+    if strict_json:
+        kwargs["response_format"] = {"type": "json_object"}
+    return client.chat.completions.create(**kwargs)
 
-    content = response.choices[0].message.content or "{}"
-    return json.loads(content)
 
-def grade_student_paper(api_key: str, grading_model: str, question_paper: str,
-                        answer_key: str, student_text: str, max_marks: int) -> Dict[str, Any]:
+def grade_student_paper(
+    api_key: str,
+    grading_model: str,
+    question_paper: str,
+    answer_key: str,
+    student_text: str,
+    max_marks: int,
+) -> Dict[str, Any]:
     client = Groq(api_key=api_key)
+    prompt = _grading_prompt(question_paper, answer_key, student_text, max_marks)
 
     def request():
         _wait_for_gap("grade")
-        result = _grade_request(client, grading_model, question_paper, answer_key, student_text, max_marks)
+        try:
+            # First attempt: JSON Object Mode for predictable machine-readable output.
+            response = _grade_request(client, grading_model, prompt, max_marks, True)
+        except Exception as first_error:
+            # Some model/account combinations reject or fail JSON validation. Retry once
+            # without response_format; we still parse and validate the returned JSON locally.
+            message = str(first_error).lower()
+            if "json_validate_failed" not in message and "failed to validate json" not in message:
+                raise
+            time.sleep(1.0)
+            response = _grade_request(client, grading_model, prompt, max_marks, False)
         _mark_call("grade")
-        return result
+        return response
 
-    # Grading calls are protected from bursts and still retry provider 429s.
     with _GRADE_LOCK:
-        result = _call_with_retries(request, attempts=4)
+        response = _call_with_retries(request)
+
+    content = response.choices[0].message.content or "{}"
+    try:
+        result = _extract_json(content)
+    except Exception as exc:
+        raise ValueError(f"Grading model returned invalid JSON: {exc}") from exc
 
     score = max(0.0, min(float(result.get("score", 0)), float(max_marks)))
     result["score"] = round(score, 2)

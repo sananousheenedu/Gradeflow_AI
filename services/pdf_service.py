@@ -1,12 +1,11 @@
 import io
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import fitz
 from pypdf import PdfReader
 
 
 def extract_pdf_text(pdf_bytes: bytes) -> str:
-    """Extract all selectable text from a PDF locally. No API call."""
     parts = []
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
@@ -26,14 +25,13 @@ def get_pdf_page_count(pdf_bytes: bytes) -> int:
 
 
 def extract_pages_with_text(pdf_bytes: bytes, min_chars: int = 25) -> List[Dict]:
-    """Return per-page selectable text so mixed PDFs only OCR the pages that need it."""
     pages = []
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
-        for i, page in enumerate(reader.pages, start=1):
+        for number, page in enumerate(reader.pages, start=1):
             text = (page.extract_text() or "").strip()
             pages.append({
-                "page": i,
+                "page": number,
                 "text": text,
                 "needs_ocr": len(text) < min_chars,
             })
@@ -46,13 +44,9 @@ def render_pdf_pages(
     pdf_bytes: bytes,
     max_pages: int = 30,
     scale: float = 0.60,
-    page_numbers: List[int] | None = None,
+    page_numbers: Optional[List[int]] = None,
 ):
-    """Render selected PDF pages as compact JPEGs.
-
-    page_numbers uses 1-based page numbers. If omitted, all pages up to max_pages
-    are rendered. Compact images reduce vision input tokens and upload time.
-    """
+    """Render selected pages as compact JPEGs. Page numbers are 1-based."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     images = []
     wanted = set(page_numbers) if page_numbers else None

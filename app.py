@@ -23,7 +23,7 @@ with st.sidebar:
     st.header("⚙️ Settings")
     grading_model = st.text_input("Grading model", value=cfg.grading_model)
     vision_model = st.text_input("Vision/OCR model", value=cfg.vision_model)
-    workers = st.slider("Parallel grading workers", 1, 2, min(cfg.max_workers, 2))
+    workers = st.slider("Grading workers", 1, 2, 2, help="Up to 2 grading workers. OCR itself remains rate-safe and serialized.")
     max_marks = st.number_input("Exam maximum marks", min_value=1, max_value=10000, value=100)
     review_threshold = st.slider("Manual review threshold", 0.0, 1.0, cfg.review_threshold, 0.05)
     use_vision = st.checkbox("Use Vision OCR for scanned/handwritten PDFs", value=True)
@@ -33,7 +33,7 @@ with st.sidebar:
         st.success("Groq API key loaded")
     else:
         st.error("GROQ_API_KEY missing")
-    st.caption("For the current Groq on-demand limits, 1 worker is the safest starting point. Each PDF is processed independently, so one failure does not stop the batch.")
+    st.caption("Optimized mode: digital pages are processed locally, only scanned pages use Vision OCR, OCR calls are serialized, and grading is rate-controlled.")
 
 st.markdown("## 1. Exam setup")
 c1, c2 = st.columns(2)
@@ -110,8 +110,12 @@ if st.button("🚀 Start bulk grading", type="primary", use_container_width=True
         page_count = get_pdf_page_count(pdf_bytes)
         try:
             text = extract_pdf_text(pdf_bytes)
-            if use_vision and len(text.strip()) < cfg.min_text_chars_for_ocr:
+            if use_vision:
+                # vision_ocr_pdf now OCRs only pages that lack selectable text.
+                # This is much faster for mixed digital/scanned student PDFs.
                 text = vision_ocr_pdf(cfg.api_key, pdf_bytes, vision_model, int(max_pages))
+            elif not text.strip():
+                raise ValueError("No selectable text found. Enable Vision OCR for scanned/handwritten PDFs.")
             if not text.strip():
                 raise ValueError("No readable text could be extracted from this PDF.")
 

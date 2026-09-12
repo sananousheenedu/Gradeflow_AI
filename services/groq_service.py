@@ -97,7 +97,6 @@ def _vision_ocr_page(client: Groq, model: str, image_bytes: bytes, page_number: 
             messages=[{"role": "user", "content": content}],
             temperature=0,
             max_completion_tokens=350,
-            service_tier="auto",
         )
         _mark_call("vision")
         return response

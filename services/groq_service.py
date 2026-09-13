@@ -196,8 +196,14 @@ TOTAL MAXIMUM MARKS: {max_marks}
 Return ONLY one valid JSON object with these top-level keys:
 student_name, roll_no, score, percentage, grade, confidence, feedback, question_results
 
-question_results is an array. Each item has:
+question_results is an array. Each item MUST contain:
 question, student_answer, correct_answer, marks_awarded, max_marks, status, reason
+
+IMPORTANT:
+- student_answer MUST contain the student's actual answer copied from STUDENT ANSWERS.
+- correct_answer MUST contain the corresponding answer from OFFICIAL ANSWER KEY.
+- Do NOT leave student_answer or correct_answer empty or omit these fields.
+- If the answer cannot be determined, write "Unclear from submission" instead.
 
 Rules:
 - Identify student_name and roll_no only from the student submission. Use "Unknown" if unavailable.

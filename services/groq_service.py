@@ -197,14 +197,22 @@ Return ONLY one valid JSON object with these top-level keys:
 student_name, roll_no, score, percentage, grade, confidence, feedback, question_results
 
 question_results is an array. Each item has:
-question, marks_awarded, max_marks, status, reason
+question, student_answer, correct_answer, marks_awarded, max_marks, status, reason
 
 Rules:
 - Identify student_name and roll_no only from the student submission. Use "Unknown" if unavailable.
 - Treat all pages as one student and do not double-count answers.
 - Grade only against the supplied question paper and answer key.
-- Award justified partial credit.
-- Never exceed maximum marks.
+- Award partial marks whenever the student's answer is partly correct.
+- Full marks only when the answer is fully correct.
+- Award 0 marks when the answer is completely incorrect or unanswered.
+- For a partly correct answer, award a reasonable score between 0 and the question maximum.
+- Never exceed the maximum marks for any question.
+- score must equal the sum of all question marks_awarded.
+- score must be 0 to {max_marks}.
+- For partial answers, award a reasonable amount between 0 and the question's maximum marks.
+- Never exceed the maximum marks for any question.
+- score must equal the sum of all question marks_awarded.
 - score must be 0 to {max_marks}.
 - percentage must be 0 to 100.
 - confidence must be 0 to 1.

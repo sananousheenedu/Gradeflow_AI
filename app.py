@@ -236,47 +236,79 @@ if st.session_state.results:
 
     st.markdown("## ⚠️ Teacher review queue")
 
-    review_items = [
-        r for r in st.session_state.results
-        if r.get("review_required")
-    ]
+review_items = [
+    r for r in st.session_state.results
+    if r.get("review_required")
+]
 
-    if not review_items:
-        st.success("No papers currently require manual review.")
-    else:
-        st.warning(f"{len(review_items)} paper(s) require review.")
+if not review_items:
+    st.success("No papers currently require manual review.")
+else:
+    st.warning(f"{len(review_items)} paper(s) require review.")
 
-        for r in review_items:
-            with st.expander(
-                f"{r.get('student_name')} • "
-                f"{r.get('roll_no')} • "
-                f"{r.get('score')}/{r.get('total_marks')}"
+    for r_index, r in enumerate(review_items):
+        with st.expander(
+            f"{r.get('student_name')} • "
+            f"{r.get('roll_no')} • "
+            f"{r.get('score')}/{r.get('total_marks')}"
+        ):
+            for reason in r.get("review_reasons", []):
+                st.write(f"- {reason}")
+
+            st.write(r.get("feedback", ""))
+
+            st.markdown("### ✏️ Teacher correction")
+
+            if r.get("question_results"):
+                for q_index, qr in enumerate(r["question_results"]):
+                    question = qr.get("question", "Unknown")
+                    ai_marks = float(qr.get("marks_awarded", 0))
+                    max_q_marks = float(qr.get("max_marks", 0))
+
+                    teacher_marks = st.number_input(
+                        f"Question {question} marks",
+                        min_value=0.0,
+                        max_value=max_q_marks,
+                        value=ai_marks,
+                        step=0.5,
+                        key=f"teacher_marks_{r_index}_{q_index}"
+                    )
+
+                    qr["teacher_marks"] = teacher_marks
+
+            if st.button(
+                "✅ Finalize teacher corrections",
+                key=f"finalize_{r_index}"
             ):
-                for reason in r.get("review_reasons", []):
-                    st.write(f"- {reason}")
+                total_score = 0.0
 
-                st.write(r.get("feedback", ""))
-    for qr in r["question_results"]:
-        question = qr.get("question", "Unknown")
-        marks = qr.get("marks_awarded", 0)
-        max_q_marks = qr.get("max_marks", "")
-        status = qr.get("status", "unclear")
-        reason = qr.get("reason", "No reason provided.")
+                for qr in r["question_results"]:
+                    final_marks = qr.get(
+                        "teacher_marks",
+                        qr.get("marks_awarded", 0)
+                    )
+                    qr["marks_awarded"] = final_marks
+                    total_score += float(final_marks)
 
-        with st.expander(f"Question {question} — {marks}/{max_q_marks} marks ({status})"):
-            c1, c2, c3 = st.columns(3)
+                r["score"] = total_score
+                r["total_marks"] = sum(
+                    float(qr.get("max_marks", 0))
+                    for qr in r["question_results"]
+                )
 
-            with c1:
-                st.markdown("**Student Answer**")
-                st.write(qr.get("student_answer", "Not available"))
+                if r["total_marks"] > 0:
+                    r["percentage"] = (
+                        total_score / r["total_marks"]
+                    ) * 100
 
-            with c2:
-                st.markdown("**Correct Answer**")
-                st.write(qr.get("correct_answer", "Not available"))
+                r["teacher_finalized"] = True
+                r["review_required"] = False
 
-            with c3:
-                st.markdown("**AI Reason**")
-                st.write(reason)
+                st.success(
+                    f"Finalized! Final score: "
+                    f"{r['score']}/{r['total_marks']}"
+                )
+                st.rerun()
 
     st.markdown("## ⬇️ Export")
     d1, d2 = st.columns(2)

@@ -34,20 +34,15 @@ def _mark_call(kind: str):
         _last_grade_call = time.monotonic()
 
 
-def _sleep_for_rate_limit(exc: Exception, default_seconds: float = 8.0, attempt: int = 0):
-    """Back off for temporary Groq throttling/overload responses."""
+def _sleep_for_rate_limit(exc: Exception, default_seconds: float = 8.0):
     message = str(exc)
     match = re.search(r"try again in ([0-9.]+)s", message, flags=re.I)
-    if match:
-        seconds = float(match.group(1)) + 1.0
-    else:
-        # Exponential backoff: 3, 6, 12, 24... seconds.
-        seconds = max(default_seconds, 3.0) * (2 ** attempt)
-    time.sleep(min(max(seconds, 2.0), 60.0))
+    seconds = float(match.group(1)) if match else default_seconds
+    time.sleep(min(max(seconds + 1.0, 2.0), 90.0))
 
 
 def _call_with_retries(fn, attempts: int = 4):
-    """Retry temporary Groq rate/capacity errors, but never retry daily-token limits."""
+    """Retry short-lived rate limits, but NEVER hammer a daily-token limit."""
     last = None
     for attempt in range(attempts):
         try:
@@ -56,39 +51,31 @@ def _call_with_retries(fn, attempts: int = 4):
             last = exc
             message = str(exc).lower()
 
-            # TPD is a daily model-token ceiling. Retrying cannot make the
-            # exhausted quota available again.
+            # TPD is a daily model-token ceiling. If Groq gives a short
+            # "try again in ..." interval, wait once and retry automatically.
             if "tokens per day" in message or "tpd" in message:
+                match = re.search(r"try again in ([0-9]+)m(?:([0-9.]+)s)?", message, flags=re.I)
+                if attempt == 0 and match:
+                    minutes = float(match.group(1))
+                    seconds = float(match.group(2) or 0)
+                    wait_seconds = min(max(minutes * 60 + seconds + 2.0, 5.0), 360.0)
+                    time.sleep(wait_seconds)
+                    continue
                 raise RuntimeError(
-                    "Groq daily token limit reached for this model. "
-                    "Switch the Vision/OCR model or wait for Groq's quota reset. "
-                    "Original error: " + str(exc)
+                    "Groq daily token limit is still exhausted for this model. "
+                    "Groq currently provides Qwen 3.6 and Qwen 3.8 as the Vision models; "
+                    "this patch cannot bypass the daily quota. Wait for the reset or "
+                    "use a higher Groq tier. Original error: " + str(exc)
                 ) from exc
 
-            # 503 means temporary server overload/capacity. Groq recommends
-            # waiting and retrying with exponential backoff.
-            is_capacity = (
-                "503" in message
-                or "over capacity" in message
-                or "service unavailable" in message
-                or "internal_server_error" in message
-            )
             is_rate = (
                 "429" in message
                 or "rate limit" in message
                 or "rate_limit" in message
             )
-            if not (is_capacity or is_rate):
+            if not is_rate or attempt == attempts - 1:
                 raise
-            if attempt == attempts - 1:
-                if is_capacity:
-                    raise RuntimeError(
-                        "Groq model temporarily over capacity after retries. "
-                        "Switching to the fallback Vision model is recommended. "
-                        "Original error: " + str(exc)
-                    ) from exc
-                raise
-            _sleep_for_rate_limit(exc, default_seconds=2.0, attempt=attempt)
+            _sleep_for_rate_limit(exc)
     raise last
 
 
@@ -116,8 +103,7 @@ def _vision_ocr_page(client: Groq, model: str, image_bytes: bytes, page_number: 
             model=model,
             messages=[{"role": "user", "content": content}],
             temperature=0,
-            max_completion_tokens=300,
-            reasoning_effort="none",
+            max_completion_tokens=350,
         )
         _mark_call("vision")
         return response
@@ -128,13 +114,8 @@ def _vision_ocr_page(client: Groq, model: str, image_bytes: bytes, page_number: 
     return f"\n--- PAGE {page_number} ---\n{response.choices[0].message.content or ''}"
 
 
-def vision_ocr_pdf(api_key: str, pdf_bytes: bytes, model: str, max_pages: int = 30, fallback_model: str = "qwen/qwen3.6-27b") -> str:
+def vision_ocr_pdf(api_key: str, pdf_bytes: bytes, model: str, max_pages: int = 30, fallback_model: str = "qwen/qwen3.8-27b") -> str:
     """Use local text extraction for digital pages and Vision only for scanned pages."""
-    if not fallback_model or fallback_model == model:
-        fallback_model = (
-            "qwen/qwen3.6-27b" if model != "qwen/qwen3.6-27b"
-            else "qwen/qwen3.8-27b"
-        )
     page_info = extract_pages_with_text(pdf_bytes, min_chars=25)
     if not page_info:
         return ""
@@ -153,31 +134,17 @@ def vision_ocr_pdf(api_key: str, pdf_bytes: bytes, model: str, max_pages: int = 
         )
         client = Groq(api_key=api_key)
         active_model = model
-        fallback_used = False
         for item in images:
             try:
                 ocr_map[item["page"]] = _vision_ocr_page(
                     client, active_model, item["bytes"], item["page"]
                 )
             except RuntimeError as exc:
-                error_text = str(exc).lower()
-                # If the primary Vision model is out of daily quota OR temporarily
-                # unavailable/over capacity, switch to the configured fallback model.
-                # We do this once per PDF so we do not bounce between models.
-                can_fallback = (
-                    fallback_model
-                    and active_model != fallback_model
-                    and not fallback_used
-                    and (
-                        "daily token limit reached" in error_text
-                        or "503" in error_text
-                        or "over capacity" in error_text
-                        or "service unavailable" in error_text
-                    )
-                )
-                if can_fallback:
+                # If the primary Vision model has exhausted its daily token quota,
+                # try the alternate Vision model once. This is a model-level fallback,
+                # not a retry against the exhausted quota.
+                if "daily token limit reached" in str(exc).lower() and fallback_model and active_model != fallback_model:
                     active_model = fallback_model
-                    fallback_used = True
                     ocr_map[item["page"]] = _vision_ocr_page(
                         client, active_model, item["bytes"], item["page"]
                     )
@@ -255,15 +222,10 @@ def _grade_request(client: Groq, model: str, prompt: str, max_marks: int, strict
             {"role": "user", "content": prompt},
         ],
         temperature=0,
-        max_completion_tokens=1800,
+        max_completion_tokens=2600,
     )
     if strict_json:
         kwargs["response_format"] = {"type": "json_object"}
-    # Keep grading output compact and avoid unnecessary reasoning tokens.
-    if model.startswith("openai/gpt-oss"):
-        kwargs["reasoning_effort"] = "low"
-    elif model.startswith("qwen/"):
-        kwargs["reasoning_effort"] = "none"
     return client.chat.completions.create(**kwargs)
 
 

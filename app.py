@@ -196,21 +196,66 @@ if st.session_state.results:
     if not qdf.empty:
         st.bar_chart(qdf.set_index("Question")["Average Marks"])
         st.dataframe(qdf, use_container_width=True, hide_index=True)
+    st.markdown("## 📝 Detailed question grading")
+
+    for r in st.session_state.results:
+        with st.expander(
+            f"{r.get('student_name', 'Unknown')} • "
+            f"{r.get('roll_no', 'Unknown')} • "
+            f"{r.get('score', 0)}/{r.get('total_marks', max_marks)}"
+        ):
+            if r.get("question_results"):
+                for qr in r["question_results"]:
+                    question = qr.get("question", "Unknown")
+                    marks = qr.get("marks_awarded", 0)
+                    max_q_marks = qr.get("max_marks", "")
+                    status = qr.get("status", "unclear")
+
+                    st.markdown(
+                        f"### Question {question} — "
+                        f"{marks}/{max_q_marks} marks ({status})"
+                    )
+
+                    c1, c2, c3 = st.columns(3)
+
+                    with c1:
+                        st.markdown("**Student Answer**")
+                        st.write(qr.get("student_answer", "Not available"))
+
+                    with c2:
+                        st.markdown("**Correct Answer**")
+                        st.write(qr.get("correct_answer", "Not available"))
+
+                    with c3:
+                        st.markdown("**AI Reason**")
+                        st.write(qr.get("reason", "No reason provided."))
+
+                    st.divider()
+            else:
+                st.info("No question-level results available.")
 
     st.markdown("## ⚠️ Teacher review queue")
-    review_items = [r for r in st.session_state.results if r.get("review_required")]
+
+    review_items = [
+        r for r in st.session_state.results
+        if r.get("review_required")
+    ]
+
     if not review_items:
         st.success("No papers currently require manual review.")
     else:
         st.warning(f"{len(review_items)} paper(s) require review.")
+
         for r in review_items:
-            with st.expander(f"{r.get('student_name')} • {r.get('roll_no')} • {r.get('score')}/{r.get('total_marks')}"):
+            with st.expander(
+                f"{r.get('student_name')} • "
+                f"{r.get('roll_no')} • "
+                f"{r.get('score')}/{r.get('total_marks')}"
+            ):
                 for reason in r.get("review_reasons", []):
                     st.write(f"- {reason}")
-                st.write(r.get("feedback", ""))
-                if r.get("question_results"):
-    st.markdown("### 📝 Question-by-question grading")
 
+                st.write(r.get("feedback", ""))
     for qr in r["question_results"]:
         question = qr.get("question", "Unknown")
         marks = qr.get("marks_awarded", 0)

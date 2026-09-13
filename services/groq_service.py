@@ -78,9 +78,17 @@ def _call_with_retries(fn, attempts: int = 4):
                 or "rate limit" in message
                 or "rate_limit" in message
             )
-            if not (is_capacity or is_rate) or attempt == attempts - 1:
+            if not (is_capacity or is_rate):
                 raise
-            _sleep_for_rate_limit(exc, attempt=attempt)
+            if attempt == attempts - 1:
+                if is_capacity:
+                    raise RuntimeError(
+                        "Groq model temporarily over capacity after retries. "
+                        "Switching to the fallback Vision model is recommended. "
+                        "Original error: " + str(exc)
+                    ) from exc
+                raise
+            _sleep_for_rate_limit(exc, default_seconds=2.0, attempt=attempt)
     raise last
 
 
@@ -122,6 +130,11 @@ def _vision_ocr_page(client: Groq, model: str, image_bytes: bytes, page_number: 
 
 def vision_ocr_pdf(api_key: str, pdf_bytes: bytes, model: str, max_pages: int = 30, fallback_model: str = "qwen/qwen3.6-27b") -> str:
     """Use local text extraction for digital pages and Vision only for scanned pages."""
+    if not fallback_model or fallback_model == model:
+        fallback_model = (
+            "qwen/qwen3.6-27b" if model != "qwen/qwen3.6-27b"
+            else "qwen/qwen3.8-27b"
+        )
     page_info = extract_pages_with_text(pdf_bytes, min_chars=25)
     if not page_info:
         return ""

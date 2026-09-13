@@ -209,7 +209,29 @@ if st.session_state.results:
                     st.write(f"- {reason}")
                 st.write(r.get("feedback", ""))
                 if r.get("question_results"):
-                    st.dataframe(pd.DataFrame(r["question_results"]), use_container_width=True, hide_index=True)
+    st.markdown("### 📝 Question-by-question grading")
+
+    for qr in r["question_results"]:
+        question = qr.get("question", "Unknown")
+        marks = qr.get("marks_awarded", 0)
+        max_q_marks = qr.get("max_marks", "")
+        status = qr.get("status", "unclear")
+        reason = qr.get("reason", "No reason provided.")
+
+        with st.expander(f"Question {question} — {marks}/{max_q_marks} marks ({status})"):
+            c1, c2, c3 = st.columns(3)
+
+            with c1:
+                st.markdown("**Student Answer**")
+                st.write(qr.get("student_answer", "Not available"))
+
+            with c2:
+                st.markdown("**Correct Answer**")
+                st.write(qr.get("correct_answer", "Not available"))
+
+            with c3:
+                st.markdown("**AI Reason**")
+                st.write(reason)
 
     st.markdown("## ⬇️ Export")
     d1, d2 = st.columns(2)
